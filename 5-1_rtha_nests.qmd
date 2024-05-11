@@ -1,26 +1,163 @@
 ---
-title: "5/1 RTHA Nests"
+title: "Working with NestWatch Data in R"
 format: html
 editor: visual
+author: "Ella Eleopoulos"
 ---
 
-## Quarto
+## Guide to NestWatch
 
-Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+#### Introduction
 
-## Running Code
+This document serves as a guide on how to download raw data from NestWatch to be processed in R for further spatial analysis. No prior experience with R is necessary. [NestWatch](https://nestwatch.org/) is a citizen science platform that contains information on bird nesting and phenology. This data is open to the public!
 
-When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+#### Downloading the raw data
+
+Download the nest summaries and locations file from the bottom of [this page](https://nestwatch.org/explore/nestwatch-open-dataset-downloads/). Make sure to rename it to something descriptive, like nestwatch_raw_data.csv.
+
+## Filtering the Data in R
+
+#### Download required packages
 
 ```{r}
-1 + 1
+### These packages need to be installed before calling the library() function.
+### If you need to install them, remove the pound signs for install.packages()
+#install.packages("dplyr")
+library(dplyr)
+#install.packages("tidyverse")
+library(tidyverse)
+#install.packages("sf")
+library(sf)
+#install.packages("terra")
+library(terra)
+#install.packages("janitor")
+library(janitor)
+#install.packages("naturalearth")
+library(rnaturalearth)
+#install.packages("ggspatial")
+library(ggspatial)
+##install.packages("phenmod")
+library(phenmod)
+library(amt)
+library(lubridate)
+
+sf_use_s2(FALSE)
 ```
 
-You can add options to executable code like this
+#### Reading in the file
+
+For this step, make sure that your raw data file is in the same folder as this document
 
 ```{r}
-#| echo: false
-2 * 2
+### Read in the data, assigning it to a new object. 
+raw_dat <- read.csv("nestwatch_raw_data.csv")
 ```
 
-The `echo: false` option disables the printing of code (only output is displayed).
+#### Filtering the NestWatch data
+
+This filters the data for what species, year, and location you're looking for. Here, I filter for all of California, but we'll filter further for LA County in a further step
+
+```{r}
+rtha_input <- raw_dat |> 
+  ## Filter the data for the bird you want
+  filter(Species.Name == "Red-tailed Hawk",
+  ## Filter the data for the state and area you want
+         Subnational.Code == "US-CA",
+  
+  ## Filter the data for the year you want
+         Year == 2021,
+  ) |> 
+  ## Only choose these rows
+  dplyr::select(Latitude, Year, Longitude, Species.Name)
+
+## This writes a csv of the new filtered data if you want to bring it to another
+## program (like ArcGIS Pro)
+write.csv(rtha_input, "dat_RTHA_USA.csv",
+          row.names = F)  
+```
+
+## Plotting the Data
+
+#### Change the data to coordinates
+
+In this step, we are changing the Longitude and Latitude to coordinates, so we can plot the data on a graph
+
+```{r}
+rtha_coord <- rtha_input |>
+  ## Convert this data to include coordinates based on "Latitude" and "Longitude"
+  st_as_sf(coords=c("Longitude", "Latitude"), 
+           ## This number is a shortcut to indicate WGS84, the datum that we are 
+           ## using to project our data
+           crs = 4326)
+## View the coordinate data
+st_crs(rtha_coord)
+```
+
+#### Filter further for LA County
+
+A shapefile is an object defining a boundary. This shapefile for LA County was downloaded from the [Los Angeles GeoHub](https://geohub.lacity.org/datasets/10f1e37c065347e693cf4e8ee753c09b/explore). Most counties have a database that contains shapefiles for their cities.
+
+The shapefile will download as a zip. Change the name of the folder to something recognizable, like County_Boundary. Unzip this, and place all of the files in the same folder this document is in.
+
+```{r}
+### Loading the shapefile
+                    ## change dsn = to your working directory. You can find this by
+                    ## navigating to any file in your folder, and then click copy
+la_shape <- read_sf(dsn = "/Users/ellaeleopoulos/R_projects/5-1_rtha_nests/",
+                    ## layer = is the name of the files. Shapefiles use multiple files, which
+                    ## why multiple files were downloaded in the zip. R will read all of these
+                    layer = "County_Boundary")
+### st_intersection clips the input data (first input) based on a shape (second input)
+rtha_la <- st_intersection(rtha_coord, la_shape)
+```
+
+#### Visualizing the data
+
+```{r}
+## Plot the data onto a blank graph, based on latitude and longitude
+ggplot(data = rtha_la) +
+  geom_sf()
+### To meters
+rtha_la <- rtha_la |>
+  st_transform(crs = st_crs(26910))
+ggplot(data = rtha_la) + geom_sf() +
+  coord_sf(datum = st_crs(26910))
+```
+
+## Resource Selection Exploration
+
+This section will input a land cover raster to explore resource selection in RTHAs. We want to see if they are selecting their nesting locations based off of a land cover class (such as low development).
+
+#### Plot random points
+
+```{r}
+la_x_y <- as_tibble(st_coordinates(rtha_la))
+rtha_la <- cbind(rtha_la, la_x_y)
+
+rtha_tk <- rtha_la |> 
+         mutate(ID = seq.int(nrow(rtha_la))) |> 
+  make_track(.x = X,
+             .y = Y,
+             .t = Year,
+             id = ID,
+             crs = st_crs(26910))
+
+r_pts <- rtha_tk |> 
+  random_points()
+
+plot(r_pts)
+```
+
+#### Download raster data (land cover)
+
+Download land cover from [MRLC](https://www.mrlc.gov/data?f%5B0%5D=year%3A2019). If you don't want to download data for the whole country, use the shapefile on the MRLC site to filter for where you download from
+
+```{r}
+la_landuse <- rast("la_landuse_3.tif")
+
+la_landuse_proj <- project(la_landuse, "+proj=utm +zone=10")
+plot(la_landuse_proj)
+
+```
+
+### Now that your raster and points are in R, you can plot them together and run analyses like resource selection functions!
